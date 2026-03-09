@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Steven Ng | AI Property Advisor</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{--gold:#C9A96E;--gold-light:#E8D5B0;--dark:#0D0D0D;--dark2:#141414;--dark3:#1C1C1C;--dark4:#242424;--text:#F0EDE8;--muted:#9A9590;--border:rgba(201,169,110,0.15)}
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--dark);color:var(--text);font-family:'DM Sans',sans-serif;min-height:100vh;display:flex;flex-direction:column}
+  /* HEADER */
+  .header{background:var(--dark2);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:100}
+  .av-wrap{position:relative;flex-shrink:0}
+  .av{width:50px;height:50px;border-radius:50%;background:linear-gradient(135deg,#C9A96E,#8B6914);display:flex;align-items:center;justify-content:center;font-family:'Playfair Display',serif;font-size:19px;font-weight:700;color:#0D0D0D}
+  .dot{position:absolute;bottom:2px;right:2px;width:11px;height:11px;border-radius:50%;background:#4CAF50;border:2px solid var(--dark2);animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+  .hinfo h1{font-family:'Playfair Display',serif;font-size:17px;font-weight:700}
+  .hinfo .sub{font-size:11px;color:var(--gold);font-weight:500;letter-spacing:.06em;text-transform:uppercase}
+  .live-badge{margin-left:auto;display:flex;align-items:center;gap:6px;background:rgba(76,175,80,.1);border:1px solid rgba(76,175,80,.3);border-radius:20px;padding:4px 12px;font-size:11px;color:#81C784;font-weight:600;letter-spacing:.04em}
+  .live-dot{width:6px;height:6px;border-radius:50%;background:#4CAF50;animation:pulse 1.5s infinite}
+  /* SOURCES BAR */
+  .sources-bar{background:rgba(201,169,110,.04);border-bottom:1px solid var(--border);padding:10px 24px;display:flex;align-items:center;gap:8px;overflow-x:auto;scrollbar-width:none}
+  .sources-bar::-webkit-scrollbar{display:none}
+  .src-label{font-size:11px;color:var(--muted);font-weight:500;white-space:nowrap;flex-shrink:0}
+  .src-chip{background:rgba(201,169,110,.08);border:1px solid rgba(201,169,110,.2);border-radius:12px;padding:3px 10px;font-size:11px;color:var(--gold-light);white-space:nowrap;flex-shrink:0}
+  /* INTRO */
+  .intro{background:linear-gradient(135deg,var(--dark3),#1A1508);border-bottom:1px solid var(--border);padding:16px 24px;text-align:center}
+  .intro p{font-size:13px;color:var(--muted);line-height:1.6;max-width:600px;margin:0 auto 12px}
+  .intro p span{color:var(--gold-light);font-weight:500}
+  .pills{display:flex;flex-wrap:wrap;gap:7px;justify-content:center}
+  .pill{background:rgba(201,169,110,.08);border:1px solid rgba(201,169,110,.22);border-radius:20px;padding:5px 13px;font-size:12px;color:var(--gold-light);cursor:pointer;transition:all .2s;font-weight:500}
+  .pill:hover{background:rgba(201,169,110,.18);border-color:var(--gold);transform:translateY(-1px)}
+  /* CHAT */
+  .chat{flex:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:18px;max-width:800px;width:100%;margin:0 auto}
+  .msg{display:flex;gap:11px;animation:up .3s ease}
+  @keyframes up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  .msg.user{flex-direction:row-reverse}
+  .mav{width:34px;height:34px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+  .mav.ai{background:linear-gradient(135deg,#C9A96E,#8B6914);color:#0D0D0D;font-family:'Playfair Display',serif;font-size:13px}
+  .mav.u{background:var(--dark4);border:1px solid var(--border);color:var(--gold)}
+  .bub{max-width:76%;padding:13px 17px;border-radius:16px;line-height:1.7;font-size:14px}
+  .msg.ai .bub{background:var(--dark3);border:1px solid var(--border);border-top-left-radius:4px;color:var(--text)}
+  .msg.user .bub{background:linear-gradient(135deg,#8B6914,#C9A96E);color:#0D0D0D;border-top-right-radius:4px;font-weight:500}
+  .bub strong{color:var(--gold)}
+  .msg.user .bub strong{color:#0D0D0D}
+  /* Source citations */
+  .cite-bar{margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px}
+  .cite-chip{background:rgba(201,169,110,.08);border:1px solid rgba(201,169,110,.2);border-radius:10px;padding:3px 9px;font-size:11px;color:var(--gold);text-decoration:none;transition:background .2s}
+  .cite-chip:hover{background:rgba(201,169,110,.18)}
+  /* Typing */
+  .typing{display:flex;gap:11px;align-items:center}
+  .dots{display:flex;gap:5px;padding:13px 17px;background:var(--dark3);border:1px solid var(--border);border-radius:16px;border-top-left-radius:4px}
+  .dots span{width:6px;height:6px;border-radius:50%;background:var(--gold);animation:bounce 1.2s infinite;opacity:.4}
+  .dots span:nth-child(2){animation-delay:.2s}.dots span:nth-child(3){animation-delay:.4s}
+  @keyframes bounce{0%,60%,100%{transform:translateY(0);opacity:.4}30%{transform:translateY(-5px);opacity:1}}
+  .search-indicator{font-size:12px;color:var(--gold);padding:4px 0;display:flex;align-items:center;gap:6px;animation:pulse 1.5s infinite}
+  /* INPUT */
+  .bottom{background:var(--dark2);border-top:1px solid var(--border);display:flex;flex-direction:column;align-items:center}
+  .input-row{padding:14px 24px;display:flex;gap:10px;align-items:flex-end;max-width:800px;width:100%}
+  .iwrap{flex:1;background:var(--dark3);border:1px solid var(--border);border-radius:12px;display:flex;align-items:flex-end;padding:10px 14px;transition:border-color .2s}
+  .iwrap:focus-within{border-color:rgba(201,169,110,.5)}
+  textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:14px;resize:none;max-height:100px;line-height:1.5;width:100%}
+  textarea::placeholder{color:var(--muted)}
+  .sbtn{width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#C9A96E,#8B6914);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s;flex-shrink:0}
+  .sbtn:hover{transform:scale(1.05);filter:brightness(1.1)}
+  .sbtn:disabled{opacity:.4;cursor:not-allowed;transform:none}
+  .sbtn svg{width:17px;height:17px;fill:#0D0D0D}
+  .disc{text-align:center;font-size:10px;color:var(--muted);padding:4px 24px 10px;opacity:.6}
+  .chat::-webkit-scrollbar{width:4px}.chat::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+  /* Markdown-like formatting */
+  .bub ul,.bub ol{padding-left:18px;margin:8px 0}
+  .bub li{margin-bottom:4px}
+  .bub a{color:var(--gold);text-decoration:none}
+  .bub a:hover{text-decoration:underline}
+  .bub .tag{display:inline-block;background:rgba(201,169,110,.15);color:var(--gold);border-radius:4px;padding:2px 7px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+  .cbox{background:rgba(201,169,110,.08);border:1px solid rgba(201,169,110,.25);border-radius:10px;padding:12px 14px;margin-top:10px;font-size:13px}
+  .cbox a{color:var(--gold);text-decoration:none;font-weight:600}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="av-wrap"><div class="av">SN</div><div class="dot"></div></div>
+  <div class="hinfo"><h1>Steven Ng</h1><div class="sub">AI Property Advisor · RES Candidate 2026</div></div>
+  <div class="live-badge"><div class="live-dot"></div>LIVE DATA</div>
+</div>
+
+<div class="sources-bar">
+  <div class="src-label">🔍 Live sources:</div>
+  <div class="src-chip">PropertyGuru</div>
+  <div class="src-chip">99.co</div>
+  <div class="src-chip">SRX</div>
+  <div class="src-chip">EdgeProp</div>
+  <div class="src-chip">URA</div>
+  <div class="src-chip">HDB</div>
+  <div class="src-chip">CEA</div>
+</div>
+
+<div class="intro">
+  <p>I search <span>live property data</span> from Singapore's top portals — PropertyGuru, SRX, URA, HDB and more — to give you accurate, up-to-date answers. Steven will personally follow up on serious enquiries.</p>
+  <div class="pills">
+    <span class="pill" onclick="sq('What are current condo prices in Woodlands?')">🏢 Condo Prices</span>
+    <span class="pill" onclick="sq('What is ABSD and how much do I pay as a Singapore Citizen buying a second property?')">💰 ABSD Rates</span>
+    <span class="pill" onclick="sq('What are the latest HDB BTO launches in 2026?')">🏠 BTO Launches</span>
+    <span class="pill" onclick="sq('What grants are available for first time HDB buyers?')">🎁 Grants</span>
+    <span class="pill" onclick="sq('What is the current HDB resale price index trend?')">📈 Market Trend</span>
+    <span class="pill" onclick="sq('I want to speak to Steven for a free consultation')">📞 Contact Steven</span>
+  </div>
+</div>
+
+<div class="chat" id="chat">
+  <div class="msg ai">
+    <div class="mav ai">SN</div>
+    <div class="bub">
+      <div class="tag">Welcome</div><br>
+      👋 <strong>Hello! I'm Steven's AI property assistant.</strong><br><br>
+      I'm powered by <strong>live data</strong> from PropertyGuru, SRX, URA, HDB, and more — so my answers reflect the current Singapore market, not outdated information.<br><br>
+      Steven brings <strong>23 years of engineering and data analysis experience</strong> to property advisory — honest numbers, no hype.<br><br>
+      What would you like to know today? 🏠
+    </div>
+  </div>
+</div>
+
+<div class="bottom">
+  <div class="input-row">
+    <div class="iwrap">
+      <textarea id="inp" placeholder="Ask about Singapore property prices, grants, market trends..." rows="1"
+        onkeydown="hk(event)" oninput="ar(this)"></textarea>
+    </div>
+    <button class="sbtn" id="sbtn" onclick="send()">
+      <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+    </button>
+  </div>
+  <div class="disc">⚠️ General information only. Not financial advice. Steven is RES Candidate — licensed July 2026. Always verify with official sources.</div>
+</div>
+
+<script>
+let history = [];
+let busy = false;
+
+function ar(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,100)+'px';}
+function hk(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}}
+function sq(t){document.getElementById('inp').value=t;send();}
+
+function addMsg(role, html) {
+  const c = document.getElementById('chat');
+  const d = document.createElement('div');
+  d.className = 'msg ' + (role === 'user' ? 'user' : 'ai');
+  const a = document.createElement('div');
+  a.className = 'mav ' + (role === 'user' ? 'u' : 'ai');
+  a.textContent = role === 'user' ? 'You' : 'SN';
+  const b = document.createElement('div');
+  b.className = 'bub';
+  b.innerHTML = html;
+  d.appendChild(a); d.appendChild(b);
+  c.appendChild(d);
+  c.scrollTop = c.scrollHeight;
+}
+
+function showTyping(searching) {
+  const c = document.getElementById('chat');
+  const d = document.createElement('div');
+  d.id = 'ty';
+  if (searching) {
+    d.className = 'msg ai';
+    d.innerHTML = `<div class="mav ai">SN</div><div class="bub"><div class="search-indicator">🔍 Searching live property data...</div></div>`;
+  } else {
+    d.className = 'typing';
+    d.innerHTML = `<div class="mav ai">SN</div><div class="dots"><span></span><span></span><span></span></div>`;
+  }
+  c.appendChild(d);
+  c.scrollTop = c.scrollHeight;
+}
+
+function removeTyping() {
+  const el = document.getElementById('ty');
+  if (el) el.remove();
+}
+
+// Convert basic markdown to HTML
+function md(text) {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank">$1</a>')
+    .replace(/^### (.*$)/gm, '<br><strong>$1</strong>')
+    .replace(/^## (.*$)/gm, '<br><strong style="font-size:15px;color:var(--gold)">$1</strong>')
+    .replace(/^- (.*$)/gm, '• $1')
+    .replace(/\n\n/g, '<br><br>')
+    .replace(/\n/g, '<br>');
+}
+
+async function send() {
+  if (busy) return;
+  const inp = document.getElementById('inp');
+  const text = inp.value.trim();
+  if (!text) return;
+
+  busy = true;
+  document.getElementById('sbtn').disabled = true;
+  inp.value = ''; inp.style.height = 'auto';
+
+  addMsg('user', text);
+  history.push({ role: 'user', content: text });
+
+  showTyping(true);
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: history })
+    });
+
+    const data = await res.json();
+    removeTyping();
+
+    if (data.error) {
+      addMsg('ai', `⚠️ ${data.error}`);
+    } else {
+      const reply = data.reply || 'Sorry, I could not get a response. Please try again.';
+      history.push({ role: 'assistant', content: reply });
+      addMsg('ai', md(reply));
+    }
+  } catch (err) {
+    removeTyping();
+    addMsg('ai', '⚠️ Connection error. Please check your internet and try again.');
+  }
+
+  busy = false;
+  document.getElementById('sbtn').disabled = false;
+  inp.focus();
+}
+</script>
+</body>
+</html>
