@@ -25,4 +25,5 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: 7b17619f470b387aa72cf40f67d1f58a
+          URA_ACCESS_KEY: ${{ secrets.URA_ACCESS_KEY }}
         run: python generate_report.py
