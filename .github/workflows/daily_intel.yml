@@ -1,0 +1,28 @@
+name: Daily Property Intel Report
+
+on:
+  schedule:
+    - cron: '50 23 * * *'  # 23:50 UTC = 07:50 SGT
+  workflow_dispatch:        # allows manual trigger from GitHub
+
+jobs:
+  generate-report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install anthropic requests
+
+      - name: Generate and publish report
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: 7b17619f470b387aa72cf40f67d1f58a
+        run: python generate_report.py
