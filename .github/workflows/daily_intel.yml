@@ -2,8 +2,9 @@ name: Daily Property Intel Report
 
 on:
   schedule:
-    - cron: '50 23 * * *'  # 23:50 UTC = 07:50 SGT daily
-    - cron: '0 1 * * *'    # 01:00 UTC = 09:00 SGT backup run
+   # - cron: '50 23 * * *'  # 23:50 UTC = 07:50 SGT daily
+   # - cron: '0 1 * * *'    # 01:00 UTC = 09:00 SGT backup run
+    - cron: '50 23 * * 0'  # 07:50 SGT every Sunday only
   workflow_dispatch:        # allows manual trigger from GitHub
 
 jobs:
