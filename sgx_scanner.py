@@ -38,11 +38,22 @@ def load_sgx_universe():
                 continue
             ticker = parts[0].strip()
             # Keep genuine equities only — exclude warrants and structured products
-            if (ticker.endswith('.SI') and 
-                len(ticker) <= 9 and 
-                'W.SI' not in ticker and 
-                'WW.SI' not in ticker):
-                tickers.append(ticker)
+            if not ticker.endswith('.SI'):
+                continue
+            base = ticker.replace('.SI', '')
+            name = parts[1].strip() if len(parts) > 1 else ''
+            # Exclude warrants
+            if base.endswith('W') or base.endswith('WW'):
+                continue
+            # Exclude structured products (S/B suffix with letter before it)
+            if len(base) >= 4 and base[-1] in ['S','B'] and not base[-2].isdigit():
+                continue
+            # Exclude by name keywords
+            name_l = name.lower()
+            if any(x in name_l for x in ['short','long','warrant','cbbc','mcw',
+                                          'becw','ecw','xlong','xshort']):
+                continue
+            tickers.append(ticker)
         print(f"  Loaded {len(tickers)} SGX equities from Symbols_SGX.txt")
         return tickers
 
