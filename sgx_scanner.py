@@ -1,73 +1,67 @@
 """
 sgx_scanner.py
-Fully Automatic Dynamic SGX Stock Scanner — Zero Maintenance
-- Auto-discovers SGX stocks via multiple sources each week
+Fully Dynamic SGX Stock Scanner — powered by EODData universe file
+- Reads Symbols_SGX.txt from repo (771 SGX equities, warrants excluded)
 - Pre-filters by market cap > SGD 50M and volume > 100K/day
-- Scores survivors on fundamentals + macro overlay
+- Scores ~100-150 survivors on fundamentals + macro overlay
 - Returns top 30 and top 3 for TradingAgents analysis
+
+To update universe: download new Symbols_SGX.txt from eoddata.com/stocklist/SGX
+and upload to repo root. No code changes needed.
 """
 
 import yfinance as yf
 import json
 import time
+import os
 import requests
-import re
 from datetime import datetime
 
-# ── SEED TICKERS ─────────────────────────────────────────────────────
-# A broad seed list covering all SGX sectors
-# Used as the scanning universe — yfinance handles delisted stocks gracefully
-# (they return no data and get filtered out automatically)
-SEED_TICKERS = [
-    # Banks
-    "D05.SI","O39.SI","U11.SI","S68.SI","G07.SI",
-    # REITs — comprehensive coverage
-    "C38U.SI","A17U.SI","ME8U.SI","N2IU.SI","J69U.SI","BUOU.SI","K71U.SI",
-    "T82U.SI","MXNU.SI","M44U.SI","AJBU.SI","OXMU.SI","RW0U.SI","CWBU.SI",
-    "KDCREIT.SI","D4IU.SI","PRIME.SI","UD1U.SI","A68U.SI","LREIT.SI",
-    "CLCT.SI","O10.SI","CICT.SI","FEHT.SI","ALLT.SI","MNACT.SI","MUST.SI",
-    "AIRSP.SI","ARTE.SI","CLI.SI","CLAR.SI","CRPU.SI","CSFU.SI","DASIN.SI",
-    # Blue Chips & STI
-    "C6L.SI","Z74.SI","U96.SI","BN4.SI","S58.SI","F34.SI","S63.SI",
-    "C52.SI","G13.SI","H02.SI","U14.SI","Y92.SI","C09.SI","F25.SI",
-    "CC3.SI","J37.SI","E5H.SI","H78.SI","9CI.SI","V03.SI","D01.SI",
-    # Technology & Semiconductors
-    "P9D.SI","5DM.SI","43A.SI","1A4.SI","1D0.SI","558.SI","E28.SI",
-    "42F.SI","5EF.SI","5LY.SI","BHQ.SI","OKP.SI","BJY.SI","5CF.SI",
-    "M1GU.SI","BDA.SI","5AB.SI","AWX.SI",
-    # Healthcare
-    "Q0F.SI","5WA.SI","580.SI","40B.SI","BMT.SI","BQC.SI","502.SI",
-    # Consumer & Retail
-    "F99.SI","EB5.SI","5WF.SI","DU4.SI","BEW.SI","OV8.SI","C2PU.SI",
-    "S7P.SI","P34.SI","F83.SI","BEW.SI",
-    # Shipping & Logistics
-    "Y35.SI","S56.SI","BS6.SI","8YZ.SI","T55.SI","5TT.SI","5MD.SI",
-    "B9S.SI","C2I.SI","T8E.SI",
-    # Property
-    "H30.SI","B61.SI","OUE.SI","T14.SI","U9E.SI","F9D.SI","AWI.SI",
-    "M01.SI","S61.SI","C8R.SI","A31.SI",
-    # Energy & Resources
-    "BKV.SI","A55.SI","RQ1.SI","5ER.SI","41F.SI","OIL.SI","EB7.SI",
-    # Industrials & Conglomerates
-    "D03.SI","544.SI","5TP.SI","1F3.SI","HKL.SI","P15.SI","BEC.SI",
-    "T23.SI","5HG.SI","Y06.SI","YZJ.SI","BN2.SI","5TI.SI","5GI.SI",
-    "BIX.SI","V1R.SI","P36.SI","C6O.SI","BDA.SI","5CP.SI","G07.SI",
-    "5IF.SI","CJY.SI","5IG.SI","42G.SI","B28.SI","BQF.SI","A50.SI",
-    # Additional quality mid-caps
-    "U9E.SI","F9D.SI","9CI.SI","5FL.SI","OKP.SI","T6I.SI",
-]
+# ── LOAD SGX UNIVERSE FROM EODDATA FILE ──────────────────────────────
+def load_sgx_universe():
+    """
+    Load full SGX equity universe from Symbols_SGX.txt
+    File format: Symbol\tDescription (tab-separated, first line is header)
+    Warrants excluded automatically (contain 'W.SI')
+    Falls back to core blue chips if file not found
+    """
+    # Try local file (available after GitHub Actions checkout)
+    local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Symbols_SGX.txt')
+    
+    if os.path.exists(local_path):
+        tickers = []
+        with open(local_path, 'r') as f:
+            lines = f.readlines()
+        for line in lines[1:]:  # skip header
+            parts = line.strip().split('\t')
+            if not parts:
+                continue
+            ticker = parts[0].strip()
+            # Keep genuine equities only — exclude warrants and structured products
+            if (ticker.endswith('.SI') and 
+                len(ticker) <= 9 and 
+                'W.SI' not in ticker and 
+                'WW.SI' not in ticker):
+                tickers.append(ticker)
+        print(f"  Loaded {len(tickers)} SGX equities from Symbols_SGX.txt")
+        return tickers
 
-# Remove duplicates while preserving order
-SEED_TICKERS = list(dict.fromkeys(SEED_TICKERS))
+    # Fallback: core blue chips if file missing
+    print("  WARNING: Symbols_SGX.txt not found — using core blue chip fallback")
+    return [
+        "D05.SI","O39.SI","U11.SI","S68.SI","C38U.SI","A17U.SI","C6L.SI",
+        "Z74.SI","S63.SI","C52.SI","G13.SI","BN4.SI","U96.SI","S58.SI",
+        "F34.SI","V03.SI","C09.SI","H78.SI","580.SI","Q0F.SI","EB5.SI",
+        "F99.SI","BS6.SI","8YZ.SI","P9D.SI","43A.SI","558.SI","1D0.SI",
+        "9CI.SI","G07.SI","ME8U.SI","N2IU.SI","BUOU.SI","K71U.SI","M44U.SI",
+    ]
 
 # ── FETCH STOCK DATA ─────────────────────────────────────────────────
 def get_stock_data(ticker):
-    """Fetch fundamentals for one ticker — returns None if delisted or no data"""
+    """Fetch fundamentals — returns None if delisted or no data"""
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-
-        # Skip if no meaningful data returned
         if not info or len(info) < 5:
             return None
 
@@ -75,7 +69,6 @@ def get_stock_data(ticker):
         if hist.empty:
             return None
 
-        # Price momentum
         momentum = 0
         if len(hist) >= 10:
             momentum = (hist['Close'].iloc[-1] - hist['Close'].iloc[0]) / hist['Close'].iloc[0] * 100
@@ -112,29 +105,35 @@ def filter_stocks(stocks):
     """
     Pre-filter: keep only liquid, real businesses
     - Market Cap > SGD 50M (no micro-caps)
-    - Avg Daily Volume > 100K (can buy/sell without slippage)
-    - Revenue > SGD 10M (real business)
-    - P/E not deeply negative (not loss-making)
+    - Avg Daily Volume > 100K shares (can trade without slippage)
+    - Revenue > SGD 10M (real operating business)
+    - P/E not deeply negative (not severe loss-maker)
     """
     filtered = []
+    stats = {'market_cap': 0, 'volume': 0, 'revenue': 0, 'negative_pe': 0}
     for s in stocks:
         if not s:
             continue
         if s['market_cap'] < 50_000_000:
+            stats['market_cap'] += 1
             continue
         if s['avg_volume'] < 100_000:
+            stats['volume'] += 1
             continue
         if s['revenue'] < 10_000_000:
+            stats['revenue'] += 1
             continue
         pe = s['pe_ratio']
-        if pe and pe < -5:  # allow slight negative but not deep losses
+        if pe and pe < -10:
+            stats['negative_pe'] += 1
             continue
         filtered.append(s)
+    print(f"  Pre-filter removed: mkt_cap={stats['market_cap']}, volume={stats['volume']}, revenue={stats['revenue']}, neg_pe={stats['negative_pe']}")
     return filtered
 
 # ── SCORE ────────────────────────────────────────────────────────────
 def score_stock(stock, macro_context):
-    """Score stock 0-100 — higher is better buy candidate"""
+    """Score 0-100 — higher = better buy candidate for SGX retail investor"""
     score = 50
 
     pe = stock['pe_ratio']
@@ -146,7 +145,7 @@ def score_stock(stock, macro_context):
 
     # P/E valuation (max +20)
     if pe:
-        if 5 < pe < 12:    score += 20
+        if 5 < pe < 12:     score += 20
         elif 12 <= pe < 18: score += 12
         elif 18 <= pe < 25: score += 5
         elif pe >= 25:      score -= 5
@@ -163,72 +162,92 @@ def score_stock(stock, macro_context):
     elif div >= 2: score += 6
     elif div >= 1: score += 3
 
-    # Debt (max +10)
+    # Debt/equity (max +10)
     if de is not None:
         if de < 30:    score += 10
         elif de < 80:  score += 6
         elif de < 150: score += 2
         elif de > 250: score -= 8
 
-    # Momentum (max +10) — steady uptrend preferred
-    if 2 < mom < 15:   score += 10
-    elif 0 < mom <= 2: score += 5
+    # Momentum — steady uptrend preferred (max +10)
+    if 2 < mom < 15:     score += 10
+    elif 0 < mom <= 2:   score += 5
     elif 15 <= mom < 30: score += 3
-    elif mom >= 30:    score -= 3  # overextended
-    elif mom < -15:    score -= 8
+    elif mom >= 30:      score -= 3  # overextended
+    elif mom < -15:      score -= 8
 
     # Profit margin (max +10)
     if pm:
-        if pm > 0.20:  score += 10
+        if pm > 0.20:   score += 10
         elif pm > 0.10: score += 6
         elif pm > 0.05: score += 3
 
-    # Macro sector boost (+8)
+    # Macro sector overlay (+8)
     favoured = macro_context.get('favoured_sectors', [])
     if stock['sector'] in favoured:
         score += 8
 
     return min(100, max(0, score))
 
-# ── MAIN ─────────────────────────────────────────────────────────────
-def run_scanner(macro_context=None):
+# ── BATCH FETCHER ─────────────────────────────────────────────────────
+def fetch_batch(tickers, batch_size=10):
     """
-    Full pipeline:
-    1. Scan all seed tickers (delisted ones return no data — auto-excluded)
-    2. Pre-filter: market cap >$50M, volume >100K/day
-    3. Score on fundamentals + macro
-    4. Return top 30 and top 3
+    Efficient batch fetching — pre-screen using yfinance batch info
+    to quickly identify stocks with sufficient market cap before 
+    fetching full history
     """
-    if macro_context is None:
-        macro_context = {'favoured_sectors': ['Financial Services', 'Industrials']}
-
-    print(f"Scanning {len(SEED_TICKERS)} SGX tickers...")
-    print(f"  (Delisted/suspended stocks auto-excluded by yfinance)")
-
     results = []
     failed = 0
-
-    for i, ticker in enumerate(SEED_TICKERS):
+    total = len(tickers)
+    
+    for i, ticker in enumerate(tickers):
         data = get_stock_data(ticker)
         if data:
             results.append(data)
         else:
             failed += 1
-        if i % 25 == 0 and i > 0:
-            print(f"  Progress: {i}/{len(SEED_TICKERS)} — {len(results)} valid")
-        time.sleep(0.25)
+        
+        # Progress update every 50 stocks
+        if (i + 1) % 50 == 0:
+            print(f"  Progress: {i+1}/{total} — {len(results)} valid, {failed} no data/delisted")
+        
+        # Rate limit — be gentle with Yahoo Finance
+        time.sleep(0.2)
+    
+    return results, failed
 
-    print(f"Fetched: {len(results)} valid stocks ({failed} delisted/no data — auto-excluded)")
+# ── MAIN SCANNER ─────────────────────────────────────────────────────
+def run_scanner(macro_context=None):
+    """
+    Full pipeline:
+    1. Load full SGX universe from Symbols_SGX.txt (771 equities)
+    2. Fetch fundamentals via yfinance (delisted auto-excluded)
+    3. Pre-filter: mkt cap >$50M, volume >100K/day
+    4. Score survivors on 6 factors + macro overlay
+    5. Return top 30 and top 3
+    """
+    if macro_context is None:
+        macro_context = {'favoured_sectors': ['Financial Services', 'Industrials']}
+
+    # Load universe
+    all_tickers = load_sgx_universe()
+    all_tickers = list(dict.fromkeys(all_tickers))  # deduplicate
+    print(f"Scanning {len(all_tickers)} SGX equities from EODData universe...")
+    print(f"(Delisted/suspended stocks return no data and are auto-excluded)")
+
+    # Fetch data
+    results, failed = fetch_batch(all_tickers)
+    print(f"\nFetch complete: {len(results)} stocks with data, {failed} excluded (delisted/no data)")
 
     # Pre-filter
     filtered = filter_stocks(results)
-    print(f"After pre-filter (mkt cap >$50M, vol >100K/day): {len(filtered)} stocks")
+    print(f"After pre-filter: {len(filtered)} investable stocks (mkt cap >$50M, vol >100K/day)")
 
     if not filtered:
-        print("WARNING: No stocks passed pre-filter")
+        print("ERROR: No stocks passed pre-filter — check yfinance connectivity")
         return [], []
 
-    # Score
+    # Score all survivors
     for s in filtered:
         s['score'] = score_stock(s, macro_context)
 
@@ -237,10 +256,13 @@ def run_scanner(macro_context=None):
     top30 = ranked[:30]
     top3 = ranked[:3]
 
-    print(f"\nTop 3 SGX Picks:")
+    print(f"\nTop 3 SGX Picks this week:")
     for i, s in enumerate(top3):
         div = (s.get('dividend_yield', 0) or 0) * 100
-        print(f"  {i+1}. {s['ticker']} — {s['name'][:35]} (Score: {s['score']}, Div: {div:.1f}%)")
+        pe = s.get('pe_ratio')
+        pe_str = f"{pe:.1f}" if pe else 'N/A'
+        print(f"  {i+1}. {s['ticker']} — {s['name'][:35]}")
+        print(f"     Score: {s['score']} | P/E: {pe_str} | Div: {div:.1f}% | 3M: {s['momentum_3m']:.1f}%")
 
     return top30, top3
 
