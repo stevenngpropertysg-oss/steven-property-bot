@@ -168,7 +168,7 @@ Be specific to Singapore market context. Search for latest news on this company.
             price=stock.get('price', 'N/A'),
             pe=stock.get('pe_ratio', 'N/A'),
             pb=stock.get('pb_ratio', 'N/A'),
-            div=(stock.get('dividend_yield', 0) or 0) * 100,
+            div=min((stock.get('dividend_yield', 0) or 0) * 100, 30.0),
             mom=stock.get('momentum_3m', 0),
             sector=stock.get('sector', 'Unknown'),
             score=stock.get('score', 0),
@@ -192,7 +192,7 @@ Be specific to Singapore market context. Search for latest news on this company.
             'name': name,
             'score': stock.get('score', 0),
             'price': stock.get('price', 0),
-            'dividend_yield': (stock.get('dividend_yield', 0) or 0) * 100,
+            'dividend_yield': min((stock.get('dividend_yield', 0) or 0) * 100, 30.0),  # cap at 30% — if >30 means already in % form
             'pe_ratio': stock.get('pe_ratio', 'N/A'),
             'momentum': stock.get('momentum_3m', 0),
             'sector': stock.get('sector', 'Unknown'),
@@ -223,7 +223,8 @@ def generate_html_report(macro_data, micro_text, top30, analyses):
     # Top 30 table rows
     top30_rows = ""
     for i, s in enumerate(top30[:15]):
-        div = (s.get('dividend_yield', 0) or 0) * 100
+        raw_div = (s.get('dividend_yield', 0) or 0)
+        div = raw_div * 100 if raw_div < 1 else raw_div  # handle both decimal and % forms
         pe = s.get('pe_ratio', '-')
         pe_str = f"{pe:.1f}" if isinstance(pe, float) else str(pe) if pe else '-'
         mom = s.get('momentum_3m', 0)
