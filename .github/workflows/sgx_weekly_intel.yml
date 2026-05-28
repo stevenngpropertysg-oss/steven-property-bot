@@ -1,0 +1,29 @@
+name: SGX Weekly Intel Report
+
+on:
+  schedule:
+    - cron: '0 12 * * 0'  # 12:00 UTC = 20:00 SGT every Sunday
+  workflow_dispatch:       # allows manual trigger from GitHub
+
+jobs:
+  generate-sgx-report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install anthropic requests yfinance pandas
+
+      - name: Generate SGX Weekly Intel Report
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: cddead61d5c68fca48ae7fe67ff2a2a4
+          ALPHA_VANTAGE_KEY: D59XMOWM1UWKUHAZ
+        run: python sgx_report.py
