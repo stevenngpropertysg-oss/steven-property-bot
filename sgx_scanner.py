@@ -83,18 +83,26 @@ def score_stock(stock, macro_context):
     score = 50  # base score
 
     # Valuation (max +20)
-    if stock['pe_ratio'] and 5 < stock['pe_ratio'] < 15:
-        score += 20
-    elif stock['pe_ratio'] and 15 <= stock['pe_ratio'] < 20:
-        score += 10
-    elif stock['pe_ratio'] and stock['pe_ratio'] >= 25:
-        score -= 10
+    try:
+        pe = float(stock['pe_ratio']) if stock['pe_ratio'] else None
+        if pe and 5 < pe < 15:
+            score += 20
+        elif pe and 15 <= pe < 20:
+            score += 10
+        elif pe and pe >= 25:
+            score -= 10
+    except (TypeError, ValueError):
+        pass
 
     # Price to Book (max +10)
-    if stock['pb_ratio'] and stock['pb_ratio'] < 1.0:
-        score += 10
-    elif stock['pb_ratio'] and stock['pb_ratio'] < 1.5:
-        score += 5
+    try:
+        pb = float(stock['pb_ratio']) if stock['pb_ratio'] else None
+        if pb and pb < 1.0:
+            score += 10
+        elif pb and pb < 1.5:
+            score += 5
+    except (TypeError, ValueError):
+        pass
 
     # Dividend yield (max +15)
     div = stock['dividend_yield'] * 100 if stock['dividend_yield'] else 0
@@ -106,13 +114,17 @@ def score_stock(stock, macro_context):
         score += 5
 
     # Debt (max +10)
-    if stock['debt_to_equity'] is not None:
-        if stock['debt_to_equity'] < 50:
-            score += 10
-        elif stock['debt_to_equity'] < 100:
-            score += 5
-        elif stock['debt_to_equity'] > 200:
-            score -= 10
+    try:
+        de = float(stock['debt_to_equity']) if stock['debt_to_equity'] is not None else None
+        if de is not None:
+            if de < 50:
+                score += 10
+            elif de < 100:
+                score += 5
+            elif de > 200:
+                score -= 10
+    except (TypeError, ValueError):
+        pass
 
     # Momentum (max +10)
     mom = stock['momentum_3m']
@@ -152,8 +164,11 @@ def filter_stocks(stocks):
         if s['revenue'] < 10_000_000:
             continue
         # Exclude negative P/E (loss-making)
-        if s['pe_ratio'] and s['pe_ratio'] < 0:
-            continue
+        try:
+            if s['pe_ratio'] and float(s['pe_ratio']) < 0:
+                continue
+        except (TypeError, ValueError):
+            pass
         filtered.append(s)
     return filtered
 
