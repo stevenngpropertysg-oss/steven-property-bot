@@ -88,7 +88,7 @@ def get_stock_data(ticker):
             'market_cap': safe(info.get('marketCap')) or 0,
             'pe_ratio': safe(info.get('trailingPE')),
             'pb_ratio': safe(info.get('priceToBook')),
-            'dividend_yield': safe(info.get('dividendYield')) or 0,
+            'dividend_yield': (lambda d: d if d and d < 1 else (d/100 if d and d >= 1 else 0))(safe(info.get('dividendYield'))),  # normalise to decimal
             'debt_to_equity': safe(info.get('debtToEquity')),
             'revenue': safe(info.get('totalRevenue')) or 0,
             'profit_margin': safe(info.get('profitMargins')),
@@ -138,7 +138,8 @@ def score_stock(stock, macro_context):
 
     pe = stock['pe_ratio']
     pb = stock['pb_ratio']
-    div = (stock['dividend_yield'] or 0) * 100
+    raw_div = stock['dividend_yield'] or 0
+    div = raw_div * 100 if raw_div < 1 else raw_div  # handle both decimal and % forms
     de = stock['debt_to_equity']
     mom = stock['momentum_3m']
     pm = stock['profit_margin']
