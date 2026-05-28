@@ -17,7 +17,7 @@ from sgx_scanner import run_scanner
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 GIST_TOKEN = os.environ.get("GIST_TOKEN")
 GIST_ID = os.environ.get("GIST_ID", "cddead61d5c68fca48ae7fe67ff2a2a4")
-MODEL = "claude-sonnet-4-20250514"
+MODEL = "claude-sonnet-4-5"
 
 # SGT timezone
 SGT = timezone(timedelta(hours=8))
