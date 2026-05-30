@@ -152,18 +152,37 @@ Fundamental Score: {score}/100
 
 Macro Context: {macro}
 
-Provide a structured analysis as follows:
+IMPORTANT: You MUST search for recent news before giving any verdict. This is mandatory.
 
+Step 1 — SEARCH FOR NEWS FIRST:
+Search "{name} news 2026" and "{ticker} Singapore news"
+Look specifically for:
+- Government policy changes affecting this company or sector
+- Regulatory announcements (Singapore MAS, SGX, foreign governments)
+- Management changes or profit warnings
+- Geopolitical events affecting the sector (e.g. export controls, tariffs)
+- Any news in the last 30 days that could change the investment thesis
+
+Step 2 — PRE-BUY NEWS CHECK (MANDATORY SECTION):
+⚠️ NEWS RISK ALERT
+Rate the news risk: GREEN (no concerning news) / AMBER (monitor) / RED (thesis changed)
+List any specific news items found that affect this stock.
+If RED: Override the fundamental score — do NOT recommend buying regardless of metrics.
+
+Step 3 — FUNDAMENTAL ANALYSIS:
 BULL CASE (2-3 points why this stock could go up)
-BEAR CASE (2-3 points of risk)
+BEAR CASE (2-3 points of risk including any news found above)
 SENTIMENT: Current market sentiment on this stock
-VERDICT: BUY / HOLD / AVOID with confidence level (High/Medium/Low)
-ENTRY PRICE: Suggested entry price or range
-TARGET PRICE: 12-month price target
-STOP LOSS: Suggested stop loss level
-POSITION SIZE: Suggested % of portfolio (conservative: 1-5%)
 
-Be specific to Singapore market context. Search for latest news on this company.""".format(
+Step 4 — VERDICT:
+VERDICT: BUY / HOLD / AVOID with confidence level (High/Medium/Low)
+— If news risk is RED, verdict must be AVOID regardless of fundamentals
+ENTRY PRICE: Suggested entry price or range
+TARGET PRICE: 12-month price target (adjust if news changes thesis)
+STOP LOSS: Suggested stop loss level
+POSITION SIZE: Suggested % of portfolio (conservative: 1-5%; 0% if RED news risk)
+
+Be specific to Singapore market context. Always prioritise recent news over historical metrics.""".format(
             name=name, ticker=ticker,
             price=stock.get('price', 'N/A'),
             pe=stock.get('pe_ratio', 'N/A'),
@@ -224,7 +243,7 @@ def generate_html_report(macro_data, micro_text, top30, analyses):
     top30_rows = ""
     for i, s in enumerate(top30[:15]):
         raw_div = (s.get('dividend_yield', 0) or 0)
-        div = raw_div * 100 if raw_div < 1 else raw_div  # handle both decimal and % forms
+        div = raw_div * 100 if raw_div < 1 else raw_div  # normalise decimal to percentage
         pe = s.get('pe_ratio', '-')
         pe_str = f"{pe:.1f}" if isinstance(pe, float) else str(pe) if pe else '-'
         mom = s.get('momentum_3m', 0)
