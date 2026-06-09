@@ -12,6 +12,7 @@ import os
 import sys
 from datetime import datetime, timezone, timedelta
 from sgx_scanner import run_scanner
+from sentiment_layer import run_sentiment_pipeline
 
 # ── CONFIG ──────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -24,6 +25,13 @@ SGT = timezone(timedelta(hours=8))
 NOW = datetime.now(SGT)
 WEEK_STR = NOW.strftime("%d %B %Y")
 GENERATED = NOW.strftime("%d %b %Y, %I:%M %p SGT")
+
+# ── YOUR PORTFOLIO (update weekly) ──────────────────────────────────
+MY_PORTFOLIO = [
+    {"ticker": "5CF.SI",  "company": "OKP Holdings",  "shares": 15000, "avg_price": 0.822},
+    # Add/remove holdings as they change:
+    # {"ticker": "UIBU.SI", "company": "UIBREIT", "shares": 15000, "avg_price": 0.8166},
+]
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -65,13 +73,11 @@ Format as JSON with keys: global_signals, singapore_signals, sector_rotation, ve
         messages=[{"role": "user", "content": prompt}]
     )
 
-    # Extract text content
     text = ""
     for block in response.content:
         if hasattr(block, 'text'):
             text += block.text
 
-    # Try to parse JSON
     try:
         import re
         json_match = re.search(r'\{.*\}', text, re.DOTALL)
@@ -128,6 +134,30 @@ def run_sgx_scanner(macro_data):
     top30, top3 = run_scanner(macro_context)
     print(f"  Scanner complete. Top 3: {[s['ticker'] for s in top3]}")
     return top30, top3
+
+# ── STEP 3B: SENTIMENT FILTER ────────────────────────────────────────
+def run_sentiment_filter(top3):
+    print("Step 3b: Running sentiment analysis...")
+    top3_for_sentiment = [
+        {"ticker": s["ticker"], "company": s["name"]} for s in top3
+    ]
+    sentiment_output = run_sentiment_pipeline(top3_for_sentiment, MY_PORTFOLIO)
+
+    passed_stocks = sentiment_output["passed"]
+    stocks_to_analyse = [
+        s for s in top3
+        if any(p["ticker"] == s["ticker"] for p in passed_stocks)
+    ] or top3  # fallback to all top3 if all filtered
+
+    print(f"  Sentiment filter: {len(stocks_to_analyse)}/{len(top3)} stocks passed")
+    if len(stocks_to_analyse) < len(top3):
+        filtered = [
+            s["ticker"] for s in top3
+            if not any(p["ticker"] == s["ticker"] for p in passed_stocks)
+        ]
+        print(f"  Filtered out: {filtered}")
+
+    return stocks_to_analyse, sentiment_output
 
 # ── STEP 4: TRADINGAGENTS ANALYSIS ──────────────────────────────────
 def analyse_top3(top3, macro_summary):
@@ -211,7 +241,7 @@ Be specific to Singapore market context. Always prioritise recent news over hist
             'name': name,
             'score': stock.get('score', 0),
             'price': stock.get('price', 0),
-            'dividend_yield': min((stock.get('dividend_yield', 0) or 0) * 100, 30.0),  # cap at 30% — if >30 means already in % form
+            'dividend_yield': min((stock.get('dividend_yield', 0) or 0) * 100, 30.0),
             'pe_ratio': stock.get('pe_ratio', 'N/A'),
             'momentum': stock.get('momentum_3m', 0),
             'sector': stock.get('sector', 'Unknown'),
@@ -222,10 +252,10 @@ Be specific to Singapore market context. Always prioritise recent news over hist
     return analyses
 
 # ── STEP 5: GENERATE HTML REPORT ─────────────────────────────────────
-def generate_html_report(macro_data, micro_text, top30, analyses):
+def generate_html_report(macro_data, micro_text, top30, analyses,
+                          sentiment_html="", portfolio_html=""):
     print("Step 5: Generating HTML report...")
 
-    # Macro verdict
     verdict = macro_data.get('verdict', {})
     if isinstance(verdict, dict):
         environment = verdict.get('overall', 'NEUTRAL')
@@ -236,14 +266,12 @@ def generate_html_report(macro_data, micro_text, top30, analyses):
         key_risk = 'Monitor developments closely'
         key_opportunity = 'Selective opportunities available'
 
-    # Colour for environment
     env_colour = {"RISK-ON": "#1a7a45", "RISK-OFF": "#c0392b", "NEUTRAL": "#b7700a"}.get(environment, "#1a5276")
 
-    # Top 30 table rows
     top30_rows = ""
     for i, s in enumerate(top30[:15]):
         raw_div = (s.get('dividend_yield', 0) or 0)
-        div = raw_div * 100 if raw_div < 1 else raw_div  # normalise decimal to percentage
+        div = raw_div * 100 if raw_div < 1 else raw_div
         pe = s.get('pe_ratio', '-')
         pe_str = f"{pe:.1f}" if isinstance(pe, float) else str(pe) if pe else '-'
         mom = s.get('momentum_3m', 0)
@@ -260,7 +288,6 @@ def generate_html_report(macro_data, micro_text, top30, analyses):
             <td style="padding:8px;border-bottom:1px solid #eee;text-align:center;background:#e8f5ee;font-weight:bold;color:#1a5276">{s.get('score',0)}</td>
         </tr>"""
 
-    # Top 3 analysis cards
     analysis_cards = ""
     colours = ["#1a5276", "#0e6655", "#6e2f8a"]
     for i, a in enumerate(analyses):
@@ -285,7 +312,6 @@ def generate_html_report(macro_data, micro_text, top30, analyses):
             </div>
         </div>"""
 
-    # Macro signals HTML
     global_signals = macro_data.get('global_signals', {})
     if isinstance(global_signals, dict):
         signals_html = "".join([f"<div style='margin-bottom:8px'><span style='color:#1a5276;font-weight:bold'>{k}:</span> {v}</div>" for k, v in global_signals.items()])
@@ -332,6 +358,7 @@ def generate_html_report(macro_data, micro_text, top30, analyses):
   <div style="margin-top:12px">
     <span class="badge" style="background:{env_colour};color:white">Market: {environment}</span>
     <span class="badge" style="background:#c9982a;color:white">Top 3 Picks Inside</span>
+    <span class="badge" style="background:#2e5a9c;color:white">📰 Sentiment Filter Active</span>
   </div>
 </div>
 
@@ -374,6 +401,9 @@ def generate_html_report(macro_data, micro_text, top30, analyses):
     </div>
   </div>
 
+  <!-- SENTIMENT ANALYSIS -->
+  {sentiment_html}
+
   <!-- TOP 3 PICKS -->
   <div class="section">
     <div class="section-title">🎯 Top 3 SGX Picks This Week</div>
@@ -401,6 +431,9 @@ def generate_html_report(macro_data, micro_text, top30, analyses):
     </div>
   </div>
 
+  <!-- PORTFOLIO REVIEW -->
+  {portfolio_html}
+
   <!-- DISCLAIMER -->
   <div style="background:#fff8e8;border-radius:8px;padding:16px;font-size:12px;color:#666;line-height:1.6">
     <strong>Disclaimer:</strong> This report is generated by AI for educational and informational purposes only. It does not constitute financial advice. Past performance is not indicative of future results. Always conduct your own research and consult a licensed financial advisor before making investment decisions. Steven Ng is not a licensed financial adviser representative for equities.
@@ -410,7 +443,7 @@ def generate_html_report(macro_data, micro_text, top30, analyses):
 
 <div class="footer">
   stevenngwealth.sg &nbsp;·&nbsp; Members Area &nbsp;·&nbsp; Generated {GENERATED}<br>
-  Powered by Claude AI · SGX Data via Yahoo Finance
+  Powered by Claude AI · SGX Data via Yahoo Finance · Sentiment Layer v2
 </div>
 
 </body>
@@ -462,12 +495,19 @@ def main():
         # Step 3: Scanner
         top30, top3 = run_sgx_scanner(macro_data)
 
-        # Step 4: TradingAgents analysis
-        macro_summary = str(macro_data.get('verdict', ''))
-        analyses = analyse_top3(top3, macro_summary)
+        # Step 3b: Sentiment filter
+        stocks_to_analyse, sentiment_output = run_sentiment_filter(top3)
 
-        # Step 5: Generate HTML
-        html = generate_html_report(macro_data, micro_text, top30, analyses)
+        # Step 4: TradingAgents analysis (only on sentiment-passed stocks)
+        macro_summary = str(macro_data.get('verdict', ''))
+        analyses = analyse_top3(stocks_to_analyse, macro_summary)
+
+        # Step 5: Generate HTML with sentiment sections
+        html = generate_html_report(
+            macro_data, micro_text, top30, analyses,
+            sentiment_html=sentiment_output["sentiment_html"],
+            portfolio_html=sentiment_output["portfolio_html"]
+        )
 
         # Step 6: Push to Gist
         raw_url = push_to_gist(html)
@@ -475,7 +515,8 @@ def main():
         print("\n" + "=" * 60)
         print("✅ SGX Weekly Intel Report complete!")
         print(f"   Week: {WEEK_STR}")
-        print(f"   Top 3: {[a['ticker'] for a in analyses]}")
+        print(f"   Sentiment passed: {len(stocks_to_analyse)}/{len(top3)} stocks")
+        print(f"   Top picks: {[a['ticker'] for a in analyses]}")
         if raw_url:
             print(f"   Gist URL: {raw_url}")
         print("=" * 60)
