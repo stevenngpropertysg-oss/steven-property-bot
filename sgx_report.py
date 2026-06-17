@@ -37,9 +37,9 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
  
  
 # ── SHARED HELPER: properly-looped agentic web search ────────────────
-def run_agentic_search(prompt, max_tokens=1500, max_turns=6):
+def run_agentic_search(prompt, max_tokens=2500, max_turns=6):
     """
-    THE BUG THIS FIXES: the previous code called
+    THE BUG THIS FIXES (round 1): the previous code called
     client.messages.create(..., tools=[web_search]) exactly once and read
     whatever text blocks were in that single response. When Claude decides
     to use the search tool, that API turn ends with stop_reason="tool_use"
@@ -52,11 +52,27 @@ def run_agentic_search(prompt, max_tokens=1500, max_turns=6):
     bull case / bear case / verdict ever produced. That is exactly what
     showed up broken on the live OKP report.
  
-    THE FIX: loop on stop_reason, feeding the full assistant turn back into
-    the message history (the server-side web_search tool's result is
-    already attached to response.content by Anthropic — no manual fetch
+    THE FIX (round 1): loop on stop_reason, feeding the full assistant turn
+    back into the message history (the server-side web_search tool's result
+    is already attached to response.content by Anthropic — no manual fetch
     needed) and explicitly prompting the model to continue, until it
     reaches stop_reason == "end_turn" or we hit a safety cap on turns.
+ 
+    THE BUG THIS FIXES (round 2): the round-1 fix only treated
+    stop_reason == "tool_use" as "not finished yet, keep looping" — every
+    other stop_reason was treated as "done, return the text." But the API
+    also returns stop_reason == "max_tokens" when a response gets cut off
+    mid-sentence purely because it hit the token ceiling, NOT because the
+    model was finished. That looks identical to a clean finish to a naive
+    check, so a long structured answer (news search + 4 full sections of
+    analysis) that ran out of room mid-list — e.g. stopping right after
+    "Risk Factors to Monitor:" with nothing after it — was being returned
+    and rendered as if it were a complete, successful answer.
+ 
+    THE FIX (round 2): explicitly continue the loop on max_tokens too (not
+    just tool_use), and raise the default max_tokens ceiling so this is
+    needed less often in the first place. Only a genuine stop_reason of
+    "end_turn" (or "stop_sequence") is treated as actually finished.
     """
     messages = [{"role": "user", "content": prompt}]
     response = None
@@ -71,14 +87,24 @@ def run_agentic_search(prompt, max_tokens=1500, max_turns=6):
  
         messages.append({"role": "assistant", "content": response.content})
  
-        if response.stop_reason != "tool_use":
+        if response.stop_reason not in ("tool_use", "max_tokens"):
+            # Genuinely finished (end_turn / stop_sequence) — safe to return.
             return "".join(
                 block.text for block in response.content if hasattr(block, "text")
             )
  
+        if response.stop_reason == "max_tokens":
+            continuation_prompt = (
+                "Your previous response was cut off because it ran out of space. "
+                "Please continue exactly where you left off and finish your complete "
+                "final answer now."
+            )
+        else:
+            continuation_prompt = "Please continue and provide your complete final answer now."
+ 
         messages.append({
             "role": "user",
-            "content": "Please continue and provide your complete final answer now.",
+            "content": continuation_prompt,
         })
  
     # Hit max_turns without finishing — return what we have, clearly flagged,
@@ -334,7 +360,7 @@ Remember: Steps 2, 3, and 4 above MUST all appear, fully written out, in your fi
             macro=macro_summary[:200]
         )
  
-        text = run_agentic_search(prompt, max_tokens=1800, max_turns=6)
+        text = run_agentic_search(prompt, max_tokens=3000, max_turns=6)
  
         analyses.append({
             'ticker': ticker,
