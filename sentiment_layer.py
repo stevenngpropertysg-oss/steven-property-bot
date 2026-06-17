@@ -3,7 +3,7 @@ sentiment_layer.py
 ==================
 Track 3 Enhancement — Sentiment Analysis Layer
 Runs BEFORE TradingAgents deep dive to filter out stocks with bad news.
-
+ 
 HOW IT WORKS:
 1. Takes Top 3 stocks from sgx_scanner.py
 2. For each stock, searches recent news (last 7 days)
@@ -11,26 +11,40 @@ HOW IT WORKS:
 4. Flags RED alerts: analyst downgrades, profit warnings, scandals
 5. Only passes stocks with score >= 0 to TradingAgents
 6. Adds sentiment section to weekly HTML report
-
+ 
 INTEGRATION:
 - Add import at top of sgx_weekly_report.py
 - Call analyze_sentiment(ticker, company_name) for each Top 3 stock
 - Use result to filter before TradingAgents call
 - Include sentiment_html in weekly report
-
+ 
 COST: ~USD 0.20 per stock = ~USD 0.60 per week total
 """
-
+ 
 import anthropic
 import json
 import os
 import requests
 from datetime import datetime, timedelta, timezone
-
+ 
 # ── CONFIG ──────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SGT = timezone(timedelta(hours=8))
-
+ 
+# THE BUG THIS FIXES: this was previously "claude-sonnet-4-20250514" — a
+# dated model snapshot string that has since been retired/deprecated. Every
+# single call using it returned an HTTP 404 "model not found" error. The
+# `except Exception` block in analyze_sentiment() silently caught that 404,
+# swallowed it, and returned a fake result: score=0, label="NEUTRAL",
+# pass_filter=True, with the raw error text dumped into the "summary"
+# field (visible on the live report as "Sentiment analysis unavailable:
+# Error code: 404..."). This meant the sentiment filter was a complete
+# no-op — every stock silently passed regardless of actual news, with no
+# visible failure anywhere except that one truncated error string buried
+# in the summary text. Fixed to the current model string used correctly
+# elsewhere in this pipeline (sgx_report.py's MODEL constant).
+MODEL = "claude-sonnet-4-5"
+ 
 # Sentiment score thresholds
 SCORE_LABELS = {
     2:  ("🟢 VERY BULLISH",  "#1a7a1a", "Strong positive news momentum"),
@@ -39,7 +53,7 @@ SCORE_LABELS = {
    -1:  ("🔴 BEARISH",       "#c62828", "Negative news — caution advised"),
    -2:  ("🔴 VERY BEARISH",  "#7b1515", "Strong negative news — SKIP"),
 }
-
+ 
 # Red flag keywords that trigger automatic -2 override
 RED_FLAG_KEYWORDS = [
     "profit warning", "earnings miss", "revenue decline", "loss", "write-down",
@@ -49,17 +63,66 @@ RED_FLAG_KEYWORDS = [
     "CEO resigned", "CFO resigned", "management change", "going concern",
     "debt default", "bond default", "liquidation", "judicial management"
 ]
-
+ 
+ 
+# ── SHARED HELPER: properly-looped agentic web search ────────────────
+def _run_agentic_search(client, prompt, max_tokens=1200, max_turns=6):
+    """
+    Same fix as sgx_report.py's run_agentic_search(): a single
+    client.messages.create(..., tools=[web_search]) call only gets Claude's
+    reasoning UP TO the point it decides to search — the API turn ends with
+    stop_reason="tool_use" and Claude is waiting for the result before it
+    can write the actual JSON answer. This loops until the model is
+    genuinely finished (stop_reason == "end_turn"/"stop_sequence"), also
+    explicitly continuing on stop_reason == "max_tokens" (a response cut
+    off purely for running out of room, not because the model was done —
+    treating that as "finished" silently returns a truncated answer).
+    """
+    messages = [{"role": "user", "content": prompt}]
+    response = None
+ 
+    for _ in range(max_turns):
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=max_tokens,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=messages,
+        )
+ 
+        messages.append({"role": "assistant", "content": response.content})
+ 
+        if response.stop_reason not in ("tool_use", "max_tokens"):
+            return "".join(
+                block.text for block in response.content if hasattr(block, "text")
+            )
+ 
+        if response.stop_reason == "max_tokens":
+            continuation = (
+                "Your previous response was cut off because it ran out of space. "
+                "Please continue exactly where you left off and finish your complete "
+                "JSON answer now."
+            )
+        else:
+            continuation = "Please continue and provide your complete final JSON answer now."
+ 
+        messages.append({"role": "user", "content": continuation})
+ 
+    partial = "".join(
+        block.text for block in response.content if hasattr(block, "text")
+    ) if response else ""
+    return partial
+ 
+ 
 # ── SENTIMENT ANALYSIS ──────────────────────────────────────
 def analyze_sentiment(ticker: str, company_name: str, client=None) -> dict:
     """
     Analyze sentiment for a single SGX stock.
-    
+ 
     Args:
         ticker: SGX ticker e.g. "5CF.SI" or "41O.SI"
         company_name: Company name e.g. "OKP Holdings"
         client: Anthropic client (optional, creates one if not provided)
-    
+ 
     Returns:
         {
             "ticker": "5CF.SI",
@@ -77,18 +140,18 @@ def analyze_sentiment(ticker: str, company_name: str, client=None) -> dict:
     """
     if client is None:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
+ 
     now_sgt = datetime.now(SGT)
     week_ago = (now_sgt - timedelta(days=7)).strftime("%d %b %Y")
     today = now_sgt.strftime("%d %b %Y")
-    
+ 
     # Clean ticker for search (remove .SI suffix)
     clean_ticker = ticker.replace(".SI", "")
-
+ 
     prompt = f"""You are a Singapore equity research analyst. 
 Today is {today}. Analyze the sentiment for {company_name} (SGX: {clean_ticker}) 
 based on news and events from the past 7 days ({week_ago} to {today}).
-
+ 
 Search for and analyze:
 1. Recent earnings, results, or financial announcements
 2. Analyst upgrades/downgrades and target price changes
@@ -97,8 +160,9 @@ Search for and analyze:
 5. Regulatory actions or SGX queries
 6. Macroeconomic factors specific to this stock's sector
 7. Trading volume anomalies or unusual price movements
-
-Return a JSON object with EXACTLY this structure (no other text):
+ 
+Once your search is complete, return a JSON object with EXACTLY this structure
+(no other text before or after it — your final message must contain ONLY this JSON):
 {{
     "score": <integer from -2 to 2>,
     "score_rationale": "<one sentence explaining the score>",
@@ -122,45 +186,33 @@ Return a JSON object with EXACTLY this structure (no other text):
     "sector_tailwind": "<POSITIVE/NEUTRAL/NEGATIVE - sector macro backdrop>",
     "data_confidence": "<HIGH/MEDIUM/LOW - how much recent data was available>"
 }}
-
+ 
 Score guide:
 +2 = Strong positive catalysts (earnings beat, major contract win, analyst upgrade with big target raise)
 +1 = Mild positive (inline results, small contract, maintained BUY rating)
 0  = Neutral (no significant news, or mixed signals)
 -1 = Mild negative (slight earnings miss, analyst downgrade to HOLD, minor concern)
 -2 = Strong negative (profit warning, fraud, major lawsuit, suspended trading, cut to SELL)
-
-Be conservative — when in doubt score 0, not +1."""
-
+ 
+Be conservative — when in doubt score 0, not +1.
+Do not stop after searching — searching is only the first step. You MUST write out
+the complete JSON object as your final message."""
+ 
     try:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1000,
-            tools=[{
-                "type": "web_search_20250305",
-                "name": "web_search"
-            }],
-            messages=[{"role": "user", "content": prompt}]
-        )
-
-        # Extract text response
-        result_text = ""
-        for block in response.content:
-            if hasattr(block, "text"):
-                result_text += block.text
-
+        result_text = _run_agentic_search(client, prompt, max_tokens=1200, max_turns=6)
+ 
         # Parse JSON
         result_text = result_text.strip()
         if "```json" in result_text:
             result_text = result_text.split("```json")[1].split("```")[0].strip()
         elif "```" in result_text:
             result_text = result_text.split("```")[1].split("```")[0].strip()
-
+ 
         data = json.loads(result_text)
-
+ 
         # Validate and clamp score
         score = max(-2, min(2, int(data.get("score", 0))))
-
+ 
         # Check for red flag keywords in headlines and summary
         all_text = " ".join(data.get("headlines", []) + 
                            data.get("red_flags", []) + 
@@ -169,10 +221,10 @@ Be conservative — when in doubt score 0, not +1."""
         detected_red_flags = [kw for kw in RED_FLAG_KEYWORDS if kw in all_text]
         if detected_red_flags and score > -1:
             score = -1  # Auto-downgrade if red flags detected
-
+ 
         label, color, _ = SCORE_LABELS[score]
         analyst = data.get("analyst_latest", {})
-
+ 
         return {
             "ticker": ticker,
             "company": company_name,
@@ -191,7 +243,7 @@ Be conservative — when in doubt score 0, not +1."""
             "pass_filter": score >= 0,
             "score_rationale": data.get("score_rationale", "")
         }
-
+ 
     except Exception as e:
         # On error, return neutral — don't block the stock
         return {
@@ -212,45 +264,45 @@ Be conservative — when in doubt score 0, not +1."""
             "pass_filter": True,  # Allow through on error
             "score_rationale": "Error in analysis"
         }
-
-
+ 
+ 
 # ── BATCH ANALYSIS ───────────────────────────────────────────
 def analyze_top3_sentiment(stocks: list) -> list:
     """
     Analyze sentiment for list of stocks.
-    
+ 
     Args:
         stocks: list of dicts with keys "ticker" and "company"
                 e.g. [{"ticker": "5CF.SI", "company": "OKP Holdings"}, ...]
-    
+ 
     Returns:
         list of sentiment results, sorted by score descending
     """
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     results = []
-    
+ 
     for stock in stocks:
         print(f"  Analyzing sentiment: {stock['company']} ({stock['ticker']})...")
         result = analyze_sentiment(stock["ticker"], stock["company"], client)
         results.append(result)
-        
+ 
         status = "✅ PASS" if result["pass_filter"] else "❌ FILTERED"
         print(f"    Score: {result['score']} | {result['label']} | {status}")
         if result["red_flags"]:
             print(f"    ⚠️  Red flags: {', '.join(result['red_flags'][:2])}")
-
+ 
     # Sort by score descending
     results.sort(key=lambda x: x["score"], reverse=True)
     return results
-
-
+ 
+ 
 # ── HTML GENERATION ──────────────────────────────────────────
 def generate_sentiment_html(results: list) -> str:
     """Generate HTML section for sentiment analysis to embed in weekly report."""
-    
+ 
     passed = [r for r in results if r["pass_filter"]]
     filtered = [r for r in results if not r["pass_filter"]]
-
+ 
     html = """
     <div style="background:#1a1a2e; border-radius:12px; padding:20px; margin:20px 0;">
         <h2 style="color:#58a6ff; font-size:18px; margin:0 0 16px 0; 
@@ -258,7 +310,7 @@ def generate_sentiment_html(results: list) -> str:
             📰 SENTIMENT ANALYSIS — PRE-FILTER
         </h2>
     """
-
+ 
     for r in results:
         border_color = r["color"]
         status_badge = (
@@ -268,7 +320,7 @@ def generate_sentiment_html(results: list) -> str:
             '<span style="background:#7b1515; color:#FFB3B3; padding:2px 10px; '
             'border-radius:10px; font-size:11px; font-weight:bold;">❌ FILTERED</span>'
         )
-
+ 
         html += f"""
         <div style="background:#0d1117; border-left:4px solid {border_color}; 
                     border-radius:8px; padding:14px; margin-bottom:12px;">
@@ -290,7 +342,7 @@ def generate_sentiment_html(results: list) -> str:
                 </div>
             </div>
         """
-
+ 
         # Score bar
         score_pct = (r["score"] + 2) / 4 * 100  # Convert -2..+2 to 0..100%
         html += f"""
@@ -300,7 +352,7 @@ def generate_sentiment_html(results: list) -> str:
                             width:{score_pct}%; border-radius:4px;"></div>
             </div>
         """
-
+ 
         # Summary
         html += f"""
             <p style="color:#8b949e; font-size:12px; margin:0 0 8px 0; 
@@ -308,7 +360,7 @@ def generate_sentiment_html(results: list) -> str:
                 {r['summary']}
             </p>
         """
-
+ 
         # Headlines
         if r["headlines"]:
             html += '<div style="margin-bottom:8px;">'
@@ -319,7 +371,7 @@ def generate_sentiment_html(results: list) -> str:
                     📌 {h}
                 </div>"""
             html += "</div>"
-
+ 
         # Analyst call
         if r["analyst_action"] not in ["NONE", ""]:
             analyst_color = (
@@ -343,7 +395,7 @@ def generate_sentiment_html(results: list) -> str:
                     ({r['analyst_broker']})
                 </span>"""
             html += "</div>"
-
+ 
         # Red flags
         if r["red_flags"]:
             html += '<div style="margin-top:8px;">'
@@ -354,9 +406,9 @@ def generate_sentiment_html(results: list) -> str:
                     ⚠️ {flag}
                 </span>"""
             html += "</div>"
-
+ 
         html += "</div>"  # end stock card
-
+ 
     # Summary bar
     html += f"""
         <div style="background:#161b22; border-radius:8px; padding:12px; 
@@ -373,36 +425,36 @@ def generate_sentiment_html(results: list) -> str:
         </div>
     </div>
     """
-
+ 
     return html
-
-
+ 
+ 
 # ── PORTFOLIO REVIEW ─────────────────────────────────────────
 def analyze_portfolio_sentiment(holdings: list) -> str:
     """
     Check current holdings against sentiment signals.
     Alerts if any holding shows strong negative sentiment.
-    
+ 
     Args:
         holdings: list of dicts e.g. 
             [{"ticker": "5CF.SI", "company": "OKP Holdings", 
               "shares": 15000, "avg_price": 0.822}]
-    
+ 
     Returns:
         HTML string for portfolio review section
     """
     if not holdings:
         return ""
-
+ 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     results = []
-
+ 
     for h in holdings:
         result = analyze_sentiment(h["ticker"], h["company"], client)
         result["shares"] = h.get("shares", 0)
         result["avg_price"] = h.get("avg_price", 0)
         results.append(result)
-
+ 
     html = """
     <div style="background:#1a1a2e; border-radius:12px; padding:20px; margin:20px 0;">
         <h2 style="color:#d29922; font-size:18px; margin:0 0 16px 0;
@@ -410,7 +462,7 @@ def analyze_portfolio_sentiment(holdings: list) -> str:
             💼 YOUR PORTFOLIO REVIEW
         </h2>
     """
-
+ 
     for r in results:
         alert = r["score"] <= -1
         border = "#f85149" if alert else "#30363d"
@@ -419,7 +471,7 @@ def analyze_portfolio_sentiment(holdings: list) -> str:
             'border-radius:10px; font-size:11px;">⚠️ REVIEW POSITION</span>'
             if alert else ""
         )
-
+ 
         html += f"""
         <div style="background:#0d1117; border:1px solid {border}; 
                     border-radius:8px; padding:12px; margin-bottom:10px;">
@@ -443,21 +495,21 @@ def analyze_portfolio_sentiment(holdings: list) -> str:
             </p>
         </div>
         """
-
+ 
     html += "</div>"
     return html
-
-
+ 
+ 
 # ── INTEGRATION HELPER ───────────────────────────────────────
 def run_sentiment_pipeline(top3_stocks: list, portfolio_holdings: list = None) -> dict:
     """
     Main function to call from sgx_weekly_report.py
-    
+ 
     Args:
         top3_stocks: [{"ticker": "5CF.SI", "company": "OKP Holdings"}, ...]
         portfolio_holdings: [{"ticker": "5CF.SI", "company": "OKP", 
                               "shares": 15000, "avg_price": 0.822}, ...]
-    
+ 
     Returns:
         {
             "results": [...],          # all sentiment results
@@ -469,21 +521,21 @@ def run_sentiment_pipeline(top3_stocks: list, portfolio_holdings: list = None) -
     """
     print("\n📰 Running sentiment analysis...")
     results = analyze_top3_sentiment(top3_stocks)
-    
+ 
     passed = [r for r in results if r["pass_filter"]]
     filtered = [r for r in results if not r["pass_filter"]]
-    
+ 
     print(f"\n  ✅ Passed: {len(passed)} stocks")
     if filtered:
         print(f"  ❌ Filtered: {len(filtered)} stocks — {[r['ticker'] for r in filtered]}")
-
+ 
     sentiment_html = generate_sentiment_html(results)
-    
+ 
     portfolio_html = ""
     if portfolio_holdings:
         print("\n💼 Analyzing portfolio holdings...")
         portfolio_html = analyze_portfolio_sentiment(portfolio_holdings)
-
+ 
     return {
         "results": results,
         "passed": passed,
@@ -491,26 +543,26 @@ def run_sentiment_pipeline(top3_stocks: list, portfolio_holdings: list = None) -
         "sentiment_html": sentiment_html,
         "portfolio_html": portfolio_html
     }
-
-
+ 
+ 
 # ── DIRECT TEST ──────────────────────────────────────────────
 if __name__ == "__main__":
     """Test the sentiment layer directly"""
-    
+ 
     # Test with your current holdings
     test_stocks = [
         {"ticker": "5CF.SI", "company": "OKP Holdings"},
         {"ticker": "41O.SI", "company": "LHN Limited"},
         {"ticker": "AJBU.SI", "company": "Keppel DC REIT"},
     ]
-    
+ 
     test_portfolio = [
         {"ticker": "5CF.SI", "company": "OKP Holdings", 
          "shares": 15000, "avg_price": 0.822},
     ]
-    
+ 
     output = run_sentiment_pipeline(test_stocks, test_portfolio)
-    
+ 
     print("\n" + "="*60)
     print("SENTIMENT RESULTS:")
     print("="*60)
