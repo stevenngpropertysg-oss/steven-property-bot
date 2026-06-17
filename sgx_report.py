@@ -327,7 +327,7 @@ Remember: Steps 2, 3, and 4 above MUST all appear, fully written out, in your fi
             price=stock.get('price', 'N/A'),
             pe=stock.get('pe_ratio', 'N/A'),
             pb=stock.get('pb_ratio', 'N/A'),
-            div=min((stock.get('dividend_yield', 0) or 0) * 100, 30.0),
+            div=(stock.get('dividend_yield', 0) or 0) * 100,
             mom=stock.get('momentum_3m', 0),
             sector=stock.get('sector', 'Unknown'),
             score=stock.get('score', 0),
@@ -341,7 +341,7 @@ Remember: Steps 2, 3, and 4 above MUST all appear, fully written out, in your fi
             'name': name,
             'score': stock.get('score', 0),
             'price': stock.get('price', 0),
-            'dividend_yield': min((stock.get('dividend_yield', 0) or 0) * 100, 30.0),
+            'dividend_yield': (stock.get('dividend_yield', 0) or 0) * 100,
             'pe_ratio': stock.get('pe_ratio', 'N/A'),
             'momentum': stock.get('momentum_3m', 0),
             'sector': stock.get('sector', 'Unknown'),
@@ -371,8 +371,9 @@ def generate_html_report(macro_data, micro_text, top30, analyses,
  
     top30_rows = ""
     for i, s in enumerate(top30[:15]):
-        raw_div = (s.get('dividend_yield', 0) or 0)
-        div = raw_div * 100 if raw_div < 1 else raw_div
+        # dividend_yield is a clean decimal fraction from sgx_scanner.py
+        # (e.g. 0.024 = 2.4%) — single conversion, no guessing.
+        div = (s.get('dividend_yield', 0) or 0) * 100
         pe = s.get('pe_ratio', '-')
         pe_str = f"{pe:.1f}" if isinstance(pe, float) else str(pe) if pe else '-'
         mom = s.get('momentum_3m', 0)
