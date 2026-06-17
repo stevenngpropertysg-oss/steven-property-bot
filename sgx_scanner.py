@@ -147,8 +147,41 @@ def get_stock_data(ticker):
             return None
  
         momentum = 0
+        momentum_volatility = 0
         if len(hist) >= 10:
             momentum = (hist['Close'].iloc[-1] - hist['Close'].iloc[0]) / hist['Close'].iloc[0] * 100
+ 
+            # ── MOMENTUM QUALITY CHECK ──────────────────────────────────
+            # THE GAP THIS FIXES: raw 3-month % momentum treats a smooth,
+            # gradual gain and a violent, back-loaded spike (e.g. a thinly
+            # traded microcap that triples in 2 weeks after years of flat
+            # trading — confirmed on a live run with Trek 2000 Intl, 5AB.SI,
+            # +162.1% 3M momentum on ~790K avg daily volume and a $82M market
+            # cap) as IDENTICAL IN KIND, just different in magnitude. Both
+            # get rewarded purely for the size of the percentage move, with
+            # no signal for HOW that move happened. A speculative, possibly
+            # news/rumour-driven spike on thin liquidity is a fundamentally
+            # different (and riskier) thing than a steady uptrend, even if
+            # the raw percentage looks similar or the spike's raw number is
+            # simply much larger and dominates the ranking by sheer size.
+            #
+            # FIX: compute the standard deviation of daily returns across
+            # the same 3-month window already fetched (no new data source
+            # needed). A smooth trend has low daily-return volatility; an
+            # explosive, back-loaded spike has high daily-return volatility
+            # even when both produce a similar-looking total % change. This
+            # volatility figure is stored separately and used downstream
+            # (see rank_score_universe) to compute a volatility-ADJUSTED
+            # momentum score for ranking, rather than discarding raw
+            # momentum — the goal is to reward steady trends more than
+            # equally-sized but bumpier ones, not to penalise genuine
+            # winners outright.
+            closes = hist['Close'].values
+            daily_rets = [(closes[i+1] - closes[i]) / closes[i] for i in range(len(closes) - 1) if closes[i] != 0]
+            if len(daily_rets) >= 2:
+                mean_r = sum(daily_rets) / len(daily_rets)
+                variance = sum((r - mean_r) ** 2 for r in daily_rets) / len(daily_rets)
+                momentum_volatility = variance ** 0.5
  
         avg_vol = float(hist['Volume'].mean()) if not hist.empty else 0
  
@@ -193,6 +226,7 @@ def get_stock_data(ticker):
             'profit_margin': safe(info.get('profitMargins')),
             'avg_volume': avg_vol,
             'momentum_3m': momentum,
+            'momentum_volatility': momentum_volatility,
             'sector': info.get('sector', 'Unknown'),
             'industry': info.get('industry', 'Unknown'),
         }
@@ -297,6 +331,37 @@ def rank_score_universe(filtered_stocks, macro_context):
     if n == 0:
         return filtered_stocks
  
+    # ── MOMENTUM QUALITY ADJUSTMENT ────────────────────────────────────
+    # Compute a volatility-adjusted momentum figure for ranking, instead
+    # of raw momentum_3m. See get_stock_data()'s momentum_volatility
+    # comment for the full rationale (Trek 2000 Intl, 5AB.SI, +162.1% 3M
+    # momentum on thin volume was the live case that surfaced this gap).
+    # Formula: adjusted = momentum / (1 + K * volatility), a Sharpe-ratio-
+    # style dampening — K chosen so normal blue-chip daily volatility
+    # (~0.005-0.01 std dev) only mildly discounts the score, while a
+    # genuinely explosive, back-loaded spike (~0.03-0.05+ std dev) gets
+    # meaningfully dampened. This rewards STEADY trends over equally-
+    # sized but bumpier ones, without fully erasing genuine large moves
+    # (an extreme raw number, even discounted, can still rank highly —
+    # which is why the separate outlier flag below also exists: dampening
+    # alone is not a substitute for flagging genuinely unusual values).
+    MOMENTUM_VOLATILITY_DAMPENING_K = 50
+    EXTREME_MOMENTUM_FLAG_THRESHOLD_PCT = 50.0  # 3-month moves beyond this get flagged for visibility
+ 
+    for s in filtered_stocks:
+        raw_mom = s.get('momentum_3m', 0) or 0
+        vol = s.get('momentum_volatility', 0) or 0
+        s['momentum_adjusted'] = raw_mom / (1 + MOMENTUM_VOLATILITY_DAMPENING_K * vol)
+ 
+        if abs(raw_mom) >= EXTREME_MOMENTUM_FLAG_THRESHOLD_PCT:
+            print(f"  ⚠ EXTREME MOMENTUM [{s['ticker']}]: raw 3M momentum = {raw_mom:.1f}% "
+                  f"(daily return volatility = {vol:.4f}, adjusted score = {s['momentum_adjusted']:.1f}). "
+                  f"Flagging for manual review — extreme short-term moves on small/mid-caps "
+                  f"can reflect speculative or thinly-traded activity rather than a sustainable trend.")
+            s['momentum_flagged'] = True
+        else:
+            s['momentum_flagged'] = False
+ 
     def percentile_rank(stocks, key_func, ascending_is_better, missing_value_penalty=True):
         """
         Returns {index_in_stocks_list: percentile (0.0 worst - 1.0 best)}.
@@ -334,7 +399,7 @@ def rank_score_universe(filtered_stocks, macro_context):
     pb_pct = percentile_rank(filtered_stocks, lambda s: s['pb_ratio'], ascending_is_better=True)
     div_pct = percentile_rank(filtered_stocks, lambda s: s['dividend_yield'], ascending_is_better=False)
     de_pct = percentile_rank(filtered_stocks, lambda s: s['debt_to_equity'], ascending_is_better=True)
-    mom_pct = percentile_rank(filtered_stocks, lambda s: s['momentum_3m'], ascending_is_better=False)
+    mom_pct = percentile_rank(filtered_stocks, lambda s: s['momentum_adjusted'], ascending_is_better=False)
     pm_pct = percentile_rank(filtered_stocks, lambda s: s['profit_margin'], ascending_is_better=False)
  
     favoured = macro_context.get('favoured_sectors', [])
@@ -366,6 +431,7 @@ def rank_score_universe(filtered_stocks, macro_context):
  
         s['score'] = final_score
         s['rank_detail'] = {k: round(v * 100) for k, v in factor_percentiles.items()}
+        s['rank_detail']['momentum_flagged'] = s.get('momentum_flagged', False)
  
     return filtered_stocks
  
