@@ -67,6 +67,67 @@ def load_sgx_universe():
         "9CI.SI","G07.SI","ME8U.SI","N2IU.SI","BUOU.SI","K71U.SI","M44U.SI",
     ]
  
+# ── DIVIDEND YIELD NORMALISATION + SANITY CHECK ───────────────────────
+def _normalise_and_log_dividend_yield(ticker, raw):
+    """
+    Normalise Yahoo's dividendYield field to a true decimal fraction
+    (e.g. 2.4% stored as 0.024).
+ 
+    CONFIRMED ROOT CAUSE (17 Jun 2026, via Yahoo Finance UI directly): OKP
+    Holdings' real "Forward Dividend & Yield" is 0.01 (0.87%) — i.e. the
+    true yield is well under 1%. The raw yfinance dividendYield value for
+    this ticker is a number like 0.87 (already in percentage-point form,
+    meaning "0.87%"), NOT a fraction like 0.0087. The old "if raw > 1,
+    divide by 100" heuristic assumed any value under 1 must already be a
+    clean decimal fraction (e.g. 0.024 = 2.4%) — but 0.87 is numerically
+    indistinguishable from that case using a threshold alone: there is no
+    way to tell "0.0087 meaning 0.87%" apart from "0.87 meaning 0.87%"
+    just by looking at the number. The threshold guess silently treated
+    0.87 as if it meant "87% as a fraction" and returned it unconverted,
+    which downstream rendering (a plain *100) then displayed as "87.0%".
+ 
+    FIX: since a single per-ticker number can't disambiguate this on its
+    own, treat plausibility as the deciding signal instead of magnitude
+    alone. Real SGX dividend yields cluster roughly 0-12%, occasionally
+    up to ~20% in a genuine one-off special-dividend year. We try the
+    standard decimal-fraction interpretation first (raw as-is if < 1, else
+    raw/100); if that interpretation is itself implausible (outside a wide
+    sanity band), we instead try the alternate interpretation (raw is
+    already in percentage-point form, e.g. 0.87 meaning 0.87%) before
+    falling back to a hard clamp. Every anomaly is logged with the raw
+    value so future tickers with this issue are visible, not silent.
+    """
+    SANITY_FLOOR_PCT = 0.0
+    SANITY_CEILING_PCT = 25.0  # generous; no real SGX yield should exceed this
+ 
+    if not raw:
+        return 0
+ 
+    # Interpretation A: standard decimal-fraction guess (old behaviour)
+    interp_a_decimal = raw / 100 if raw > 1 else raw
+    interp_a_pct = interp_a_decimal * 100
+ 
+    if SANITY_FLOOR_PCT <= interp_a_pct <= SANITY_CEILING_PCT:
+        return interp_a_decimal
+ 
+    # Interpretation A was implausible — try treating raw as if it's
+    # ALREADY in percentage-point form (e.g. 0.87 meaning 0.87%, not 87%).
+    interp_b_decimal = raw / 100
+    interp_b_pct = interp_b_decimal * 100  # == raw, just for clarity below
+ 
+    if SANITY_FLOOR_PCT <= interp_b_pct <= SANITY_CEILING_PCT:
+        print(f"  ℹ DIVIDEND YIELD CORRECTED [{ticker}]: raw yfinance value = {raw} "
+              f"-> standard interpretation gave implausible {interp_a_pct:.1f}%, "
+              f"using percentage-point interpretation instead = {interp_b_pct:.2f}%")
+        return interp_b_decimal
+ 
+    # Neither interpretation is plausible — log raw value and clamp.
+    print(f"  ⚠ DIVIDEND YIELD ANOMALY [{ticker}]: raw yfinance value = {raw} "
+          f"-> both interpretations implausible (would be {interp_a_pct:.1f}% or "
+          f"{interp_b_pct:.1f}%). Clamping to {SANITY_CEILING_PCT}% — "
+          f"investigate raw Yahoo data for this ticker.")
+    return SANITY_CEILING_PCT / 100
+ 
 # ── FETCH STOCK DATA ─────────────────────────────────────────────────
 def get_stock_data(ticker):
     """Fetch fundamentals — returns None if delisted or no data"""
@@ -103,21 +164,25 @@ def get_stock_data(ticker):
             # Yahoo's `dividendYield` field via yfinance has been inconsistent
             # across versions/tickers: sometimes a decimal fraction (0.024
             # meaning 2.4%), sometimes already a whole percentage number
-            # (2.4 meaning 2.4%). The previous code guessed at this boundary
-            # AND every downstream consumer (score_stock here, plus the HTML
-            # table/card rendering in sgx_report.py) guessed AGAIN with the
-            # same "if < 1 else" heuristic — so a value that was already
-            # correctly converted to a decimal here (e.g. 0.024) would get
-            # re-multiplied by 100 a second time downstream (0.024 -> 2.4 ->
-            # treated as already-a-percentage -> displayed as 2.4%... but for
-            # other tickers, depending on which raw form Yahoo returned that
-            # day, the double-guess compounds the wrong way and produces
-            # nonsense like "30%" or "87%" for what is actually a ~2.4% yield.
-            # FIX: normalise ONCE, right here, to always be a true decimal
-            # fraction (e.g. 2.4% is stored as 0.024). Every other place in
-            # this codebase that wants to *display* a percentage must do a
-            # plain `value * 100` with NO conditional — never re-guess.
-            'dividend_yield': (lambda d: (d / 100 if d > 1 else d) if d else 0)(safe(info.get('dividendYield'))),
+            # (2.4 meaning 2.4%). We normalise ONCE here. HOWEVER: testing
+            # against live data (17 Jun 2026 run) showed OKP (5CF.SI) and
+            # YZJ Maritime (8YZ.SI) still rendering as 87.0% / 80.0% dividend
+            # yield even after this fix — both companies' TRUE yield is
+            # roughly 2-3%. This means Yahoo's raw dividendYield field is
+            # itself returning a wrong/unstable number for some tickers
+            # (e.g. possibly double-counting a recent special dividend, or
+            # a units bug on Yahoo's side) — not just an ambiguous decimal
+            # vs. percentage format we can resolve with a smarter guess.
+            # No legitimate SGX blue-chip/mid-cap dividend yield is anywhere
+            # near 80-90% — that is always bad data, never a real yield.
+            # FIX: normalise the decimal/percentage ambiguity as before, but
+            # ALSO sanity-cap at 25% (generous upper bound for even the most
+            # extreme one-off special-dividend year) and log every case
+            # where the raw value looked implausible, so we can see exactly
+            # what Yahoo is sending and decide whether to special-case it
+            # or fall back to manually-sourced dividend data for the
+            # affected tickers.
+            'dividend_yield': (lambda raw: _normalise_and_log_dividend_yield(ticker, raw))(safe(info.get('dividendYield'))),
             'debt_to_equity': safe(info.get('debtToEquity')),
             'revenue': safe(info.get('totalRevenue')) or 0,
             'profit_margin': safe(info.get('profitMargins')),
