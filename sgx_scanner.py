@@ -3,7 +3,12 @@ sgx_scanner.py
 Fully Dynamic SGX Stock Scanner — powered by EODData universe file
 - Reads Symbols_SGX.txt from repo (771 SGX equities, warrants excluded)
 - Pre-filters by market cap > SGD 50M and volume > 100K/day
-- Scores ~100-150 survivors on fundamentals + macro overlay
+- Scores ~100-150 survivors using PERCENTILE-RANK methodology, modeled on
+  Joel Greenblatt's "Magic Formula" (rank every stock on each metric
+  relative to its actual peer universe that week, then combine ranks) —
+  see rank_score_universe() docstring for full methodology notes,
+  including which factors are faithful to the original formula vs.
+  documented proxies/additions due to free-data limitations.
 - Returns top 30 and top 3 for TradingAgents analysis
  
 To update universe: download new Symbols_SGX.txt from eoddata.com/stocklist/SGX
@@ -225,66 +230,144 @@ def filter_stocks(stocks):
     print(f"  Pre-filter removed: mkt_cap={stats['market_cap']}, volume={stats['volume']}, revenue={stats['revenue']}, neg_pe={stats['negative_pe']}")
     return filtered
  
-# ── SCORE ────────────────────────────────────────────────────────────
-def score_stock(stock, macro_context):
-    """Score 0-100 — higher = better buy candidate for SGX retail investor"""
-    score = 50
+# ── SCORE: PERCENTILE-RANK METHODOLOGY (Magic Formula-style) ─────────
+def rank_score_universe(filtered_stocks, macro_context):
+    """
+    Score every stock in the filtered universe using PERCENTILE-RANK
+    scoring across the actual peer group, instead of fixed bucket
+    thresholds. This is the same core mechanism as Joel Greenblatt's
+    "Magic Formula" (The Little Book That Beats the Market, 2005):
+    rank every candidate on each metric relative to ALL OTHER
+    candidates that week, then combine the ranks. The stock with the
+    best combined relative position wins — there is no hardcoded
+    breakpoint (like "P/E between 5 and 12") that can ever be wrong,
+    arbitrary, or drift out of date, because "good" is defined entirely
+    by where a stock sits relative to its real peers that week.
  
-    pe = stock['pe_ratio']
-    pb = stock['pb_ratio']
-    # dividend_yield is ALREADY a clean decimal fraction (e.g. 0.024 = 2.4%)
-    # from get_stock_data() — do NOT re-guess or re-convert here, just scale
-    # to a percentage for the scoring thresholds below with a single *100.
-    div = (stock['dividend_yield'] or 0) * 100
-    de = stock['debt_to_equity']
-    mom = stock['momentum_3m']
-    pm = stock['profit_margin']
+    WHY THIS REPLACES THE OLD BUCKET-THRESHOLD score_stock(): the
+    previous version used fixed point buckets (e.g. "P/E 5-12 -> +20,
+    12-18 -> +12...") that were never calibrated against real SGX data
+    or a published methodology — they were originally just proposed
+    as reasonable-sounding numbers when this scanner was first built.
+    That caused two compounding problems: (1) the achievable score
+    range (29-133) didn't match the displayed 0-100 scale, causing
+    near-universal saturation at 100 once a stock cleared ~3-4 of 7
+    factors (already fixed via rescaling in a prior revision); and (2)
+    more fundamentally, the thresholds themselves had no real-world
+    grounding — there's no reason P/E=11.9 and P/E=8.0 should ever earn
+    the IDENTICAL +20 bucket score, when they are clearly not equally
+    cheap. Percentile-rank scoring fixes both: it's mathematically
+    impossible for the same metric value to rank-tie unless multiple
+    stocks are EXACTLY equal, so saturation cannot structurally occur,
+    and there is no invented breakpoint to defend or get wrong.
  
-    # P/E valuation (max +20)
-    if pe:
-        if 5 < pe < 12:     score += 20
-        elif 12 <= pe < 18: score += 12
-        elif 18 <= pe < 25: score += 5
-        elif pe >= 25:      score -= 5
+    METHODOLOGY NOTES (what's faithful to Greenblatt vs. adapted):
+    - Greenblatt's original two factors are Earnings Yield (EBIT/EV)
+      and Return on Capital (EBIT/Invested Capital). yfinance's free
+      data does not reliably expose EBIT or true invested capital for
+      SGX small/mid-caps, so this implementation uses P/E as an
+      earnings-yield proxy and profit margin as a return-quality proxy
+      — both explicitly endorsed as fallbacks in Magic Formula literature
+      when EBIT/EV and ROIC aren't available (see StableBread's Magic
+      Formula guide). This is a documented, citable substitution, not a
+      silent shortcut.
+    - P/B and debt/equity are added as supplementary value/safety
+      ranks beyond Greenblatt's original two-factor model, since SGX
+      retail investors (per this scanner's stated purpose) reasonably
+      care about balance sheet risk and book value support, which the
+      pure Magic Formula doesn't address at all.
+    - Dividend yield and momentum are SGX-market-specific additions —
+      legitimate factors in broader quant literature (income/quality
+      and momentum factors), but not part of Greenblatt's original
+      formula. Included as additional ranked factors, weighted equally
+      alongside the others rather than given outsized influence.
+    - The "favoured sector" macro overlay is NOT part of any standard
+      factor model — Greenblatt's approach is deliberately sector-
+      agnostic and mechanical. It is kept here as a SEPARATE, clearly
+      labelled bonus applied AFTER the core rank-based score, so the
+      core methodology stays faithful to the citable formula and the
+      macro overlay remains transparent and isolated rather than
+      blended into the ranking math itself.
  
-    # Price/Book (max +10)
-    if pb:
-        if pb < 0.8:   score += 10
-        elif pb < 1.2: score += 6
-        elif pb < 2.0: score += 3
+    Returns the SAME filtered_stocks list with a 'score' key (0-100)
+    added to each stock dict, and also attaches 'rank_detail' for
+    transparency (each factor's percentile rank, 1 = best).
+    """
+    n = len(filtered_stocks)
+    if n == 0:
+        return filtered_stocks
  
-    # Dividend yield (max +15) — SGX retail investors value income
-    if div >= 6:   score += 15
-    elif div >= 4: score += 11
-    elif div >= 2: score += 6
-    elif div >= 1: score += 3
+    def percentile_rank(stocks, key_func, ascending_is_better, missing_value_penalty=True):
+        """
+        Returns {index_in_stocks_list: percentile (0.0 worst - 1.0 best)}.
+        Stocks with missing/None data for this metric are ranked at the
+        worst percentile (penalised) rather than excluded or favoured —
+        excluding them would let "no data" sneak in as if it were
+        neutral or even advantageous, which is its own quiet bug class.
+        """
+        values = []
+        for i, s in enumerate(stocks):
+            v = key_func(s)
+            values.append((i, v))
  
-    # Debt/equity (max +10)
-    if de is not None:
-        if de < 30:    score += 10
-        elif de < 80:  score += 6
-        elif de < 150: score += 2
-        elif de > 250: score -= 8
+        # Separate stocks with real data from those missing this metric
+        valid = [(i, v) for i, v in values if v is not None]
+        missing = [i for i, v in values if v is None]
  
-    # Momentum — steady uptrend preferred (max +10)
-    if 2 < mom < 15:     score += 10
-    elif 0 < mom <= 2:   score += 5
-    elif 15 <= mom < 30: score += 3
-    elif mom >= 30:      score -= 3  # overextended
-    elif mom < -15:      score -= 8
+        valid_sorted = sorted(valid, key=lambda x: x[1], reverse=not ascending_is_better)
+        # valid_sorted[0] is the BEST stock on this metric after sort direction applied
  
-    # Profit margin (max +10)
-    if pm:
-        if pm > 0.20:   score += 10
-        elif pm > 0.10: score += 6
-        elif pm > 0.05: score += 3
+        percentiles = {}
+        count = len(valid_sorted)
+        for rank, (i, v) in enumerate(valid_sorted):
+            # rank 0 = best -> percentile close to 1.0 (best); last -> close to 0.0
+            percentiles[i] = 1.0 - (rank / max(count - 1, 1)) if count > 1 else 1.0
  
-    # Macro sector overlay (+8)
+        # Missing data: worst possible percentile on this factor
+        for i in missing:
+            percentiles[i] = 0.0 if missing_value_penalty else 0.5
+ 
+        return percentiles
+ 
+    # ── Core ranked factors (each contributes equally to the combined rank) ──
+    pe_pct = percentile_rank(filtered_stocks, lambda s: s['pe_ratio'] if s['pe_ratio'] and s['pe_ratio'] > 0 else None, ascending_is_better=True)
+    pb_pct = percentile_rank(filtered_stocks, lambda s: s['pb_ratio'], ascending_is_better=True)
+    div_pct = percentile_rank(filtered_stocks, lambda s: s['dividend_yield'], ascending_is_better=False)
+    de_pct = percentile_rank(filtered_stocks, lambda s: s['debt_to_equity'], ascending_is_better=True)
+    mom_pct = percentile_rank(filtered_stocks, lambda s: s['momentum_3m'], ascending_is_better=False)
+    pm_pct = percentile_rank(filtered_stocks, lambda s: s['profit_margin'], ascending_is_better=False)
+ 
     favoured = macro_context.get('favoured_sectors', [])
-    if stock['sector'] in favoured:
-        score += 8
  
-    return min(100, max(0, score))
+    for i, s in enumerate(filtered_stocks):
+        factor_percentiles = {
+            'pe': pe_pct[i],
+            'pb': pb_pct[i],
+            'dividend_yield': div_pct[i],
+            'debt_to_equity': de_pct[i],
+            'momentum': mom_pct[i],
+            'profit_margin': pm_pct[i],
+        }
+ 
+        # Combined core score: average of all six factor percentiles,
+        # scaled to 0-100. Equal weighting across factors — no single
+        # metric dominates, consistent with Magic Formula's "sum of
+        # ranks" philosophy (just expressed as percentiles instead of
+        # raw rank positions, since percentiles compare cleanly across
+        # weeks with different universe sizes).
+        core_score = (sum(factor_percentiles.values()) / len(factor_percentiles)) * 100
+ 
+        # Macro sector overlay — SEPARATE bonus, NOT blended into the
+        # core ranking. Small, capped influence so it can nudge but
+        # never dominate the mechanical ranking underneath it.
+        sector_bonus = 8 if s['sector'] in favoured else 0
+ 
+        final_score = min(100, round(core_score + sector_bonus))
+ 
+        s['score'] = final_score
+        s['rank_detail'] = {k: round(v * 100) for k, v in factor_percentiles.items()}
+ 
+    return filtered_stocks
  
 # ── BATCH FETCHER ─────────────────────────────────────────────────────
 def fetch_batch(tickers, batch_size=10):
@@ -344,9 +427,11 @@ def run_scanner(macro_context=None):
         print("ERROR: No stocks passed pre-filter — check yfinance connectivity")
         return [], []
  
-    # Score all survivors
-    for s in filtered:
-        s['score'] = score_stock(s, macro_context)
+    # Score all survivors using percentile-rank methodology (Magic
+    # Formula-style) — must run ONCE on the whole filtered list, since
+    # percentile ranking is only meaningful relative to the full peer
+    # universe, not computable for a single stock in isolation.
+    filtered = rank_score_universe(filtered, macro_context)
  
     # Rank
     ranked = sorted(filtered, key=lambda x: x['score'], reverse=True)
